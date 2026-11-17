@@ -168,6 +168,42 @@ Outputs in `results/`: `summary.csv`, `fig_cpu.png`, `fig_newconn.png`.
 - **steady ping RTT** — data-plane health; stays flat (`legit.py`).
 - **legit loss %** — false positives caused by a defense (`legit.py`).
 
+## Results
+
+ONOS CPU per scenario — the attack drives the control plane up; both defenses
+bring it back down:
+
+![ONOS CPU per scenario](results/fig_cpu.png)
+
+New-connection setup time per scenario — this is what legitimate users feel
+first under the attack, and what the defenses restore:
+
+![New-connection setup time per scenario](results/fig_newconn.png)
+
+<!-- Add your own demo screenshots like this:
+![Attack running — CPU spiking](results/screenshot_attack.png)
+-->
+
+### Summary table
+
+Mean values per scenario (replace with your own numbers from
+[`results/summary.csv`](results/summary.csv)):
+
+| Scenario | ONOS CPU % | New-conn setup (ms) | Legit loss % |
+|----------|-----------:|--------------------:|-------------:|
+| baseline        |  … |  … | … |
+| attack 200      |  … |  … | … |
+| attack 500      |  … |  … | … |
+| attack 1000     |  … |  … | … |
+| block 500       |  … |  … | … |
+| ratelimit 500   |  … |  … | … |
+
+### Raw data
+
+- [`results/summary.csv`](results/summary.csv) — mean per scenario (the table above).
+- [`results/onos.csv`](results/onos.csv) — ONOS CPU/RAM samples over time.
+- [`results/legit.csv`](results/legit.csv) — victim ping / new-connection / loss samples.
+
 ## Known issues / notes
 
 - **Order matters:** start ONOS and wait until `/devices` stops returning 503 and

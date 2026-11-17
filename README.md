@@ -186,17 +186,26 @@ first under the attack, and what the defenses restore:
 
 ### Summary table
 
-Mean values per scenario (replace with your own numbers from
-[`results/summary.csv`](results/summary.csv)):
+Mean values per scenario (full data in [`results/summary.csv`](results/summary.csv)):
 
 | Scenario | ONOS CPU % | New-conn setup (ms) | Legit loss % |
 |----------|-----------:|--------------------:|-------------:|
-| baseline        |  … |  … | … |
-| attack 200      |  … |  … | … |
-| attack 500      |  … |  … | … |
-| attack 1000     |  … |  … | … |
-| block 500       |  … |  … | … |
-| ratelimit 500   |  … |  … | … |
+| baseline        |  1.8 | 2.43 | 0.0 |
+| attack 200      | 28.8 | 0.04 | 0.0 |
+| attack 500      | 53.8 | 0.03 | 0.0 |
+| attack 1000     | 98.6 | 0.04 | 0.0 |
+| block 200       | 28.5 | 0.04 | 0.0 |
+| block 500       | 86.0 | 0.04 | 0.0 |
+| block 1000      | 74.7 | 0.05 | 0.0 |
+| ratelimit 200   | 11.0 | 0.04 | 0.0 |
+| ratelimit 500   | 23.5 | 0.04 | 0.0 |
+| ratelimit 1000  | 94.6 | 0.05 | 0.0 |
+
+**CPU is the metric that saturates:** control-plane load climbs cleanly with the
+attack rate (1.8% → 28.8% → 53.8% → 98.6% at 200/500/1000 pkt/s). Rate-limiting
+cuts it sharply at low/medium rates (28.8% → 11.0% at 200, 53.8% → 23.5% at 500)
+but loses ground near saturation (98.6% → 94.6% at 1000). No legitimate packet
+loss in any run.
 
 ### Raw data
 

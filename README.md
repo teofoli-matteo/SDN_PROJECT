@@ -11,9 +11,9 @@ and their effect on legitimate traffic.
 
 As the Packet-In flooding rate increases against a CPU-limited ONOS controller,
 **at what rate does the controller start to degrade, what breaks first**
-(CPU, RAM, ping time, or new-connection setup time), and **how do blocking and
-rate-limiting compare** at reducing the impact without harming legitimate
-traffic?
+(CPU, RAM, control-plane responsiveness, data-plane latency), and **how do
+blocking and rate-limiting compare** at reducing the impact without harming
+legitimate traffic?
 
 ## Threat model
 
@@ -38,9 +38,8 @@ traffic?
        (port1) (port2) (port3 = s1-eth3)
 ```
 
-- **h1** — legitimate server. Owns an IP alias pool `10.0.0.101-250` so the
-  prober can hit a *fresh* IP each time (= a brand-new flow).
-- **h2** — legitimate client / flow-install prober (the victim we measure).
+- **h1** — legitimate server.
+- **h2** — legitimate client (the victim we measure: steady ping + loss).
 - **h3** — attacker, runs the Scapy flood.
 
 ## Repository layout
@@ -50,13 +49,13 @@ traffic?
 | `start_onos.sh` | Launch a **CPU-limited** ONOS in Docker and activate `openflow` + `fwd` (reactive forwarding). |
 | `topology.py` | Mininet network (h1/h2/h3 + s1), for the live demo. |
 | `flood.py` | Scapy attack: random src MAC/IP → one Packet-In per packet. Runs in `h3`. |
-| `legit.py` | Victim workload in `h2`: logs steady ping, new-connection setup time, loss. |
-| `monitor.py` | Samples ONOS CPU%/RAM via `docker stats` → CSV. |
+| `legit.py` | Victim workload in `h2`: steady ping RTT + loss. |
+| `monitor.py` | Samples ONOS CPU%, RAM and REST-API latency → CSV. |
 | `block.py` | Countermeasure 1 — DROP everything from the attacker's ingress port. |
 | `ratelimit.py` | Countermeasure 2 — cap the attacker's port to N pkt/s with an ONOS meter. |
 | `onoslib.py` | Tiny ONOS REST helper (stdlib only). |
-| `run_experiment.py` | Automated driver → runs every scenario, writes `results/*.csv`. |
-| `plot.py` | Turns the CSVs into `summary.csv` + two figures. |
+| `run_experiment.py` | Automated driver: all scenarios, 3 repetitions, writes `results/*.csv`. |
+| `plot.py` | Turns the CSVs into `summary.csv` + 8 figures. |
 | `results/` | Collected CSVs and generated figures. |
 
 ## Prerequisites
@@ -77,8 +76,7 @@ docker pull onosproject/onos:2.7-latest
    the only stable identifier is the switch port the attacker sits on.
 2. **Rate-limiting uses an ONOS meter** (the SDN-native way). If your OVS build
    does not honor OF1.3 meters, enforce the same cap in the datapath with OVS
-   ingress policing (see *Known issues*). This is itself a useful finding about
-   OVS meter support.
+   ingress policing (see *Known issues*).
 
 ---
 
@@ -89,8 +87,7 @@ docker pull onosproject/onos:2.7-latest
 sudo mn -c
 sudo ./start_onos.sh
 ```
-**Checkpoint:** the REST API must answer (not 503) *and* the OpenFlow app must be
-`ACTIVE`:
+**Checkpoint:** REST must answer (not 503) *and* the OpenFlow app must be `ACTIVE`:
 ```bash
 curl -u onos:rocks http://localhost:8181/onos/v1/devices           # -> {"devices":[]}
 curl -s -u onos:rocks http://localhost:8181/onos/v1/applications/org.onosproject.openflow \
@@ -107,37 +104,26 @@ sleep 10
 ```bash
 sudo python3 topology.py --controller 127.0.0.1
 ```
-**Checkpoint:** the switch must be connected, and forwarding must work:
+**Checkpoint:**
 ```
 mininet> sh curl -s -u onos:rocks http://localhost:8181/onos/v1/devices   # of:0000000000000001
 mininet> pingall                                                          # 0% dropped
 ```
 
 ### 3. Observe + attack
-Side terminal (controller CPU, your main screen):
 ```bash
-sudo python3 monitor.py --name onos --scenario demo
+sudo python3 monitor.py --name onos --scenario demo        # side terminal
 ```
-In the Mininet CLI (`&` keeps the prompt free so both run in parallel):
+In the Mininet CLI (`&` keeps the prompt free):
 ```
 mininet> h2 python3 legit.py --server 10.0.0.1 --scenario demo &
 mininet> h3 python3 flood.py --iface h3-eth0 --dst-ip 10.0.0.1 --rate 500 --duration 120 &
 ```
-Watch ONOS CPU climb and `newconn_ms` balloon while `steady_rtt_ms` stays low —
-**only the control plane is hit.** Follow the victim live:
-```bash
-tail -f results/legit.csv
-```
 
 ### 4. Apply the countermeasures (attacker = port 3)
 ```bash
-# Defense 1 — full block of the attacker's port
-python3 block.py --port 3 --install
-python3 block.py --port 3 --remove
-
-# Defense 2 — rate limiting (ONOS meter)
-python3 ratelimit.py --port 3 --rate 150 --install
-python3 ratelimit.py --port 3 --remove
+python3 block.py --port 3 --install        # /  --remove
+python3 ratelimit.py --port 3 --rate 150 --install   # /  --remove
 ```
 
 ### 5. Teardown
@@ -154,78 +140,79 @@ sudo docker rm -f onos
 
 ## Reproducing the data (for the report)
 
-With ONOS up, instead of the manual steps:
+With ONOS up and the app `ACTIVE`:
 ```bash
+rm -f results/onos.csv results/legit.csv results/events.csv results/summary.csv
 sudo python3 run_experiment.py --controller 127.0.0.1 --rates 200,500,1000 \
-     --duration 40 --defense-delay 15
+     --duration 40 --reps 3 --trans-rate 1000 --trans-delay 20
 python3 plot.py
 ```
-Outputs in `results/`: `summary.csv`, `fig_cpu.png`, `fig_newconn.png`.
+Defenses are applied **from t=0** in the steady runs (clean "defended" averages),
+each scenario is **repeated 3×**, and two **transition** runs apply the defense
+mid-attack for the time-series figure.
 
 ### Metrics collected
-- **ONOS CPU % / RAM** — what saturates first (`monitor.py`).
-- **new-connection setup time** — what users feel first (`legit.py`, fresh-alias ping).
-- **steady ping RTT** — data-plane health; stays flat (`legit.py`).
-- **legit loss %** — false positives caused by a defense (`legit.py`).
+- **ONOS CPU %** — the resource that saturates first (headline result).
+- **ONOS RAM** — stays ~constant with the attack → *not* the bottleneck.
+- **Legit steady ping RTT + loss** — data-plane health and false positives.
+- **ONOS REST-API latency** — control-plane management responsiveness (secondary;
+  it stays low even at CPU saturation, since ONOS serves REST on separate threads).
 
 ## Results
 
-ONOS CPU per scenario — the attack drives the control plane up; both defenses
-bring it back down:
+Measured on a 1-CPU / 2 GB ONOS container, mean over 3 repetitions.
 
-![ONOS CPU per scenario](results/fig_cpu.png)
+| Scenario | ONOS CPU % | RAM (MB) | Legit ping (ms) | Loss % |
+|----------|-----------:|---------:|----------------:|-------:|
+| baseline      |   1.7 | 1993 | 0.09 | 0.0 |
+| attack 200    |  42.5 | 1994 | 0.07 | 0.0 |
+| attack 500    |  86.4 | 2004 | 0.07 | 0.0 |
+| attack 1000   | 102.0 | 2018 | 0.07 | 0.0 |
+| block 200     |  11.2 | 1999 | 0.09 | 0.0 |
+| block 500     |  28.9 | 2007 | 0.08 | 0.0 |
+| block 1000    |  36.0 | 2027 | 0.08 | 0.0 |
+| ratelimit 200 |   1.6 | 1998 | 0.07 | 0.0 |
+| ratelimit 500 |  31.3 | 2009 | 0.07 | 0.0 |
+| ratelimit 1000|   1.5 | 2031 | 0.07 | 0.0 |
 
-New-connection setup time per scenario — this is what legitimate users feel
-first under the attack, and what the defenses restore:
+**Key findings:**
+- **The control-plane CPU is what saturates.** It rises cleanly with the attack
+  rate (1.7% → 42.5% → 86.4% → 102% at 0/200/500/1000 pkt/s) and reaches full
+  saturation at 1000 pkt/s.
+- **RAM is not the bottleneck** — it stays ~2 GB regardless of the attack.
+- **The data plane stays healthy** — an established flow keeps a ~0.07 ms ping
+  and 0% loss throughout; only *control-plane* work is affected.
+- **Both defenses work; rate-limiting protects the controller best** — it brings
+  CPU back to ~1.5% at 200 and 1000 pkt/s, while blocking leaves 11–36%. Neither
+  causes legitimate packet loss.
 
-![New-connection setup time per scenario](results/fig_newconn.png)
+![CPU vs attack rate](results/fig_cpu_curve.png)
 
-<!-- Add your own demo screenshots like this:
-![Attack running — CPU spiking](results/screenshot_attack.png)
--->
+![CPU over time during the attack](results/fig_cpu_timeseries.png)
 
-### Summary table
+![CPU by defense, per attack rate](results/fig_defense_bars.png)
 
-Mean values per scenario (full data in [`results/summary.csv`](results/summary.csv)):
+![Defense applied mid-attack](results/fig_transition.png)
 
-| Scenario | ONOS CPU % | New-conn setup (ms) | Legit loss % |
-|----------|-----------:|--------------------:|-------------:|
-| baseline        |  1.8 | 2.43 | 0.0 |
-| attack 200      | 28.8 | 0.04 | 0.0 |
-| attack 500      | 53.8 | 0.03 | 0.0 |
-| attack 1000     | 98.6 | 0.04 | 0.0 |
-| block 200       | 28.5 | 0.04 | 0.0 |
-| block 500       | 86.0 | 0.04 | 0.0 |
-| block 1000      | 74.7 | 0.05 | 0.0 |
-| ratelimit 200   | 11.0 | 0.04 | 0.0 |
-| ratelimit 500   | 23.5 | 0.04 | 0.0 |
-| ratelimit 1000  | 94.6 | 0.05 | 0.0 |
-
-**CPU is the metric that saturates:** control-plane load climbs cleanly with the
-attack rate (1.8% → 28.8% → 53.8% → 98.6% at 200/500/1000 pkt/s). Rate-limiting
-cuts it sharply at low/medium rates (28.8% → 11.0% at 200, 53.8% → 23.5% at 500)
-but loses ground near saturation (98.6% → 94.6% at 1000). No legitimate packet
-loss in any run.
-
-### Raw data
-
-- [`results/summary.csv`](results/summary.csv) — mean per scenario (the table above).
-- [`results/onos.csv`](results/onos.csv) — ONOS CPU/RAM samples over time.
-- [`results/legit.csv`](results/legit.csv) — victim ping / new-connection / loss samples.
+Additional figures in `results/`: `fig_defense_effectiveness.png`,
+`fig_rest_latency.png`, `fig_ping_health.png`, `fig_memory.png`.
+Raw data: [`summary.csv`](results/summary.csv), [`onos.csv`](results/onos.csv),
+[`legit.csv`](results/legit.csv).
 
 ## Known issues / notes
 
 - **Order matters:** start ONOS and wait until `/devices` stops returning 503 and
-  the `openflow` app is `ACTIVE` *before* launching Mininet. Otherwise the switch
-  connects to a half-booted controller and never registers.
-- **OVS meters:** some OVS builds do not honor OF1.3 meters. If `ratelimit.py`
-  reports it cannot get a meter id, enforce the cap in the datapath instead:
+  the `openflow` app is `ACTIVE` *before* launching Mininet.
+- **OVS meters:** if `ratelimit.py` reports it cannot get a meter id, cap the port
+  in the datapath instead:
   ```bash
   sudo ovs-vsctl set interface s1-eth3 ingress_policing_rate=1000
   sudo ovs-vsctl set interface s1-eth3 ingress_policing_burst=100
-  # remove:
-  sudo ovs-vsctl set interface s1-eth3 ingress_policing_rate=0
+  # remove: ingress_policing_rate=0
   ```
+- **REST latency is a weak signal here** and should use a monotonic clock
+  (`time.monotonic()` in `monitor.py`) to avoid negative values if the VM clock
+  resynchronises. We rely on CPU/RAM/ping, not REST latency.
 - **Attack rate:** pure-Scapy sending tops out around 1–2k pkt/s in Python; for
   higher rates use a tool like `hping3`.
 

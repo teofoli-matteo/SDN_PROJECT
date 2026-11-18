@@ -19,7 +19,7 @@ def build(controller_ip, port):
     for h in (h1, h2, h3):
         net.addLink(h, s1)
     net.build(); c0.start(); s1.start([c0])
-    return net, h1, h2, h3, s1
+    return net, h2, h3, s1
 
 
 def attacker_port(h3, s1):
@@ -61,12 +61,11 @@ def stop_obs(mon, legit, duration):
     legit.terminate()
 
 
-def run_steady(net, h1, h2, h3, s1, name, rate, defense, rep, ctrl, duration):
-    """Defense (if any) is active for the WHOLE run -> clean 'defended' mean."""
+def run_steady(h2, h3, s1, name, rate, defense, rep, ctrl, duration):
     print(f"\n=== {name} rep{rep} (rate={rate}, defense={defense}) ===")
     port = attacker_port(h3, s1)
     if defense != "none":
-        apply_defense(ctrl, port, defense, rate)   
+        apply_defense(ctrl, port, defense, rate)
     mon, legit = start_obs(h2, name, rep, duration)
     h2.cmd("ping -c1 -W1 10.0.0.1")
     atk = None
@@ -81,8 +80,7 @@ def run_steady(net, h1, h2, h3, s1, name, rate, defense, rep, ctrl, duration):
     time.sleep(3)
 
 
-def run_transition(net, h1, h2, h3, s1, name, rate, defense, ctrl, duration, delay, events):
-    """Attack runs, then the defense kicks in at `delay` -> time-series figure."""
+def run_transition(h2, h3, s1, name, rate, defense, ctrl, duration, delay, events):
     print(f"\n=== {name} (rate={rate}, defense={defense} @ {delay}s) ===")
     port = attacker_port(h3, s1)
     mon, legit = start_obs(h2, name, 1, duration)
@@ -115,21 +113,21 @@ def main():
     events = csv.writer(ev); events.writerow(["scenario", "applied_elapsed"])
 
     setLogLevel('warning')
-    net, h1, h2, h3, s1 = build(a.controller, a.port)
+    net, h2, h3, s1 = build(a.controller, a.port)
     time.sleep(3)
     rates = [int(r) for r in a.rates.split(",") if r.strip()]
 
     try:
         for rep in range(1, a.reps + 1):
-            run_steady(net, h1, h2, h3, s1, "baseline", 0, "none", rep, a.controller, a.duration)
+            run_steady(h2, h3, s1, "baseline", 0, "none", rep, a.controller, a.duration)
             for r in rates:
-                run_steady(net, h1, h2, h3, s1, f"attack{r}", r, "none", rep, a.controller, a.duration)
-                run_steady(net, h1, h2, h3, s1, f"block{r}", r, "block", rep, a.controller, a.duration)
-                run_steady(net, h1, h2, h3, s1, f"ratelimit{r}", r, "ratelimit", rep, a.controller, a.duration)
+                run_steady(h2, h3, s1, f"attack{r}", r, "none", rep, a.controller, a.duration)
+                run_steady(h2, h3, s1, f"block{r}", r, "block", rep, a.controller, a.duration)
+                run_steady(h2, h3, s1, f"ratelimit{r}", r, "ratelimit", rep, a.controller, a.duration)
         tr = a.trans_rate
-        run_transition(net, h1, h2, h3, s1, f"transblock{tr}", tr, "block",
+        run_transition(h2, h3, s1, f"transblock{tr}", tr, "block",
                        a.controller, a.duration, a.trans_delay, events)
-        run_transition(net, h1, h2, h3, s1, f"transratelimit{tr}", tr, "ratelimit",
+        run_transition(h2, h3, s1, f"transratelimit{tr}", tr, "ratelimit",
                        a.controller, a.duration, a.trans_delay, events)
     finally:
         ev.close()

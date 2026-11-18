@@ -13,7 +13,7 @@ class Onos:
         req = urllib.request.Request(self.base + path, data=data, method=method)
         req.add_header("Authorization", self.auth)
         req.add_header("Accept", "application/json")
-        if data is not None:                       # only on POST/PUT with a body
+        if data is not None:                       
             req.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -33,7 +33,6 @@ class Onos:
         return devs[0]["id"]
 
     def port_rx_packets(self, device_id, port):
-        """Cumulative packets received on a switch port (for rate detection)."""
         st = self.get(f"/statistics/ports/{device_id}/{port}")
         for s in st.get("statistics", []):
             for p in s.get("ports", []):

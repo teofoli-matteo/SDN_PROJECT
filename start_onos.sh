@@ -1,10 +1,4 @@
 #!/usr/bin/env bash
-# Launch a RESOURCE-LIMITED ONOS controller in Docker and activate the apps
-# we need for REACTIVE forwarding (so every new flow hits the control plane).
-#
-# The CPU cap is the whole point of the experiment: a constrained control plane
-# saturates at a few hundred Packet-In/s instead of needing millions. Lower
-# CPU_LIMIT => saturates sooner. Keep MEM_LIMIT >= 1.5g or the JVM won't boot.
 set -euo pipefail
 
 ONOS_VERSION="${ONOS_VERSION:-2.7-latest}"

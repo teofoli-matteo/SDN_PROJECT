@@ -39,7 +39,7 @@ def main():
                 time.sleep(dt)
     except KeyboardInterrupt:
         pass
-    print(f"[attack] done, sent {sent} packets (~{sent / a.duration:.0f} pkt/s)")
+    print(f"[attack] done, sent {sent} packets (~{sent / max(a.duration, 1):.0f} pkt/s)")
 
 
 if __name__ == '__main__':

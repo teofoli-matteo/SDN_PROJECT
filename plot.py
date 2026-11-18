@@ -16,6 +16,10 @@ def parse(scn):
 
 
 def load():
+    for name in ("onos.csv", "legit.csv"):
+        if not os.path.exists(os.path.join(R, name)):
+            raise SystemExit(
+                f"Missing results/{name}. Run run_experiment.py before plot.py.")
     onos = pd.read_csv(os.path.join(R, "onos.csv"))
     legit = pd.read_csv(os.path.join(R, "legit.csv"))
     for c in ("cpu_pct", "mem_mb", "rest_ms", "elapsed"):

@@ -1,0 +1,5 @@
+# Python dependencies for the controller/measurement side.
+# Mininet, Open vSwitch and ONOS are system/container components, not pip packages.
+scapy>=2.5
+pandas>=2.0
+matplotlib>=3.7

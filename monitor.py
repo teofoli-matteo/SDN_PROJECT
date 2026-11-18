@@ -65,14 +65,14 @@ def main():
         w.writerow(["ts", "scenario", "rep", "elapsed", "cpu_pct", "mem_mb",
                     "mem_pct", "rest_ms"])
 
-    start = time.time()
+    start = time.monotonic()
     end = start + a.duration if a.duration else None
     print(f"[monitor] {a.name} -> {a.out} (scenario={a.scenario} rep={a.rep})")
     try:
-        while end is None or time.time() < end:
+        while end is None or time.monotonic() < end:
             s = docker_sample(a.name)
             rest = rest_latency_ms(url, auth)
-            elapsed = round(time.time() - start, 1)
+            elapsed = round(time.monotonic() - start, 1)
             if s:
                 w.writerow([f"{time.time():.1f}", a.scenario, a.rep, elapsed,
                             s[0], mem_to_mb(s[1]), s[2], rest])

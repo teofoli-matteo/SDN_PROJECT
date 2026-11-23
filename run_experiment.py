@@ -159,6 +159,10 @@ def stop_obs(mon, legit, duration):
             mon.wait(timeout=5)
         except Exception:
             mon.kill()
+    if mon.returncode != 0:
+        raise RuntimeError(
+            f"monitor.py exited with code {mon.returncode} -- "
+            "controller samples are missing for this scenario")
     legit.terminate()
     try:
         legit.wait(timeout=5)

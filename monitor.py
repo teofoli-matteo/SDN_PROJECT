@@ -104,7 +104,7 @@ def main():
     start = time.monotonic()
     end = start + a.duration if a.duration else None
     print(f"[monitor] {a.name} -> {a.out} (scenario={a.scenario} rep={a.rep})")
-    prev_usage, prev_t = cpu_pct_from_cgroup(a.name, None, 0.0)
+    prev_usage, prev_t, _ = cpu_pct_from_cgroup(a.name, None, 0.0)
     try:
         while end is None or time.monotonic() < end:
             prev_usage, prev_t, cpu = cpu_pct_from_cgroup(a.name, prev_usage, prev_t)

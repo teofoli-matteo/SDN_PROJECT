@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ONOS_VERSION="${ONOS_VERSION:-2.7-latest}"
-CPU_LIMIT="${CPU_LIMIT:-1.0}"     # cores for ONOS  (try 0.5 if you want it fragile)
+CPU_LIMIT="${CPU_LIMIT:-1.0}"    
 MEM_LIMIT="${MEM_LIMIT:-2g}"
 NAME="${NAME:-onos}"
 

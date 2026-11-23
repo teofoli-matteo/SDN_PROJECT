@@ -1,0 +1,6 @@
+label,threshold,defense,triggered,detect_s,mitigate_s,port,rate_pkts
+th100,100,ratelimit,1,6.65,6.69,3,181
+th200,200,ratelimit,1,6.67,6.71,3,247
+th300,300,ratelimit,1,6.03,6.07,3,563
+th500,500,ratelimit,1,14.12,14.21,3,544
+th800,800,ratelimit,0,,,,

@@ -306,43 +306,48 @@ The raw flood output of each scenario is kept in
 
 ## Results
 
-Means over three repetitions (detection: three runs per threshold), on a one-CPU,
-2 GB ONOS container.
+Means over three repetitions (detection: three runs per threshold). Dataset
+collected 2026-11-23 with the merged pipeline, Fedora 45 host, podman 6.2
+rootful container (`--cpus=1.0 --memory=2g`), Open vSwitch 4.0.0,
+ONOS 2.7.1, Mininet 2.3.1. Controller CPU is sampled from the container's
+cgroup v2 counter.
 
 | Scenario | ONOS CPU % | RAM (MB) | REST latency (ms) | Legit ping (ms) | Loss % |
 |----------|-----------:|---------:|------------------:|----------------:|-------:|
-| baseline      |   1.3 | 2031 |  5.2 | 0.09 | 0.0 |
-| attack 200    |  52.3 | 2032 | 10.4 | 0.06 | 0.0 |
-| attack 500    |  73.6 | 2034 | 10.6 | 0.06 | 0.0 |
-| attack 1000   | 100.0 | 2034 | 42.5 | 0.06 | 0.0 |
-| block 200     |   6.6 | 2033 |  5.3 | 0.06 | 0.0 |
-| block 500     |   8.4 | 2034 |  5.9 | 0.06 | 0.0 |
-| block 1000    |  35.7 | 2034 |  7.9 | 0.06 | 0.0 |
-| ratelimit 200 |   1.6 | 2033 |  4.9 | 0.06 | 0.0 |
-| ratelimit 500 |   1.3 | 2034 |  4.8 | 0.06 | 0.0 |
-| ratelimit 1000|   1.2 | 2033 |  4.7 | 0.06 | 0.0 |
+| baseline      |   2.7 | 944 |  5.6 | 0.08 | 0.0 |
+| attack 200    |  62.2 | 948 | 14.3 | 0.08 | 0.0 |
+| attack 500    |  92.2 | 880 | 33.7 | 0.08 | 0.0 |
+| attack 1000   |  94.9 | 892 | 52.4 | 0.26 | 0.0 |
+| block 200     |  57.9 | 947 | 10.4 | 0.08 | 0.0 |
+| block 500     |  22.3 | 889 |  7.0 | 0.08 | 0.0 |
+| block 1000    |  55.1 | 895 | 11.0 | 0.07 | 0.0 |
+| ratelimit 200 |   2.6 | 890 |  5.4 | 0.08 | 0.0 |
+| ratelimit 500 |   2.6 | 886 |  5.2 | 0.08 | 0.0 |
+| ratelimit 1000|   2.1 | 898 |  4.6 | 0.06 | 0.0 |
 
-The control-plane CPU is what saturates: it climbs from 1.3% at rest to 52.3%,
-73.6% and 100% (the full single-core quota) at 200, 500 and 1000 pkt/s. The REST
-latency follows: 5.2 ms at rest against 42.5 ms (~8x) under the 1000 pkt/s
-flood — even served on separate threads, control-plane responsiveness degrades
-measurably under saturation. RAM stays near 2 GB throughout, so it is not the
-bottleneck. The legitimate ping stays around 0.06 ms with no loss, because an
-established flow is forwarded by the switch alone; what a Packet-In flood breaks
-is the ability to set up *new* flows, which is exactly what it denies every
-spoofed source it injects.
+The control-plane CPU is what saturates: from 2.7% at rest to 62.2% and 92.2%
+at 200 and 500 pkt/s, and full saturation at 94.9% of its single-core quota at
+1000 pkt/s. The load is not purely per-packet: ONOS learns a new "host" per
+spoofed source MAC, so the cost compounds during a run (the 200 pkt/s curve
+climbs from ~40% to ~100% within the 40 s window). RAM stays near 900 MB in
+every scenario on this ONOS build, with no trend, so memory is not the
+bottleneck. The REST latency follows the CPU: 5.6 ms at rest against 52.4 ms
+(~9x) at saturation — measurable degradation, but the endpoint stays alive.
+The established legitimate ping stays sub-millisecond with zero loss in every
+scenario (0.26 ms worst case at full saturation); what a Packet-In flood
+breaks is the installation of *new* flows, which is exactly what it denies.
 
-Both defenses protect the controller, and in steady state they bring it back to
-the baseline: the rate-limited port stays at 1.2–1.6% CPU at every attack rate
-(the meter caps what reaches the controller and the `NORMAL` output keeps even
-the allowed packets in the datapath). The block averages (6.6%, 8.4%, 35.7%)
-deserve a caveat: the scenarios run back to back, and the block run starts
-while ONOS is still flushing the reactive state installed by the **preceding
-attack run** — with only 3 s between scenarios, the bigger the preceding
-attack, the longer the flush. The per-run time series (`fig_cpu_timeseries.png`)
-shows it directly: `block1000` starts near 68% and decays to ~2% within 16–24 s,
-i.e. blocking itself drops everything, the average is inflated by the tail of
-the previous scenario, not by a weakness of the rule.
+**Both defenses restore the controller to its baseline in steady state.**
+Rate limiting holds 2.1–2.6% CPU at every attack rate: the meter caps what
+reaches the controller, and the `NORMAL` output keeps even the allowed packets
+in the datapath. The block window-averages are again inflated by the
+protocol's back-to-back order: each block run starts ~3 s after the previous
+attack run ended, while ONOS is still flushing the reactive state (learned
+hosts and short-lived flows) that the attack installed. On this ONOS build the
+flush tail is long enough to dominate a 40 s window — `block1000` runs open at
+~100% CPU and decay to ~2% after ~25 s (`fig_cpu_timeseries.png` shows the
+decay). The steady-state level of the DROP rule itself is baseline, matching
+the rate-limited runs.
 
 ![CPU vs attack rate](results/fig_cpu_curve.png)
 
@@ -352,20 +357,29 @@ the previous scenario, not by a weakness of the rule.
 
 For the autonomous detector against a 500 pkt/s attack, three runs per
 threshold, every reported mitigation verified as actually installed in ONOS
-(`verified=1` in `detection.csv`): thresholds of 100, 200 and 300 pkt/s detect
-and mitigate in about 6–7 seconds, 500 pkt/s in about 11.5 seconds, and
-800 pkt/s never triggers, so the attack runs unchecked. A higher threshold is
-crossed later, and one set above the attack rate misses the attack entirely.
-The reaction time has a floor of a few seconds, set by how often ONOS refreshes
-its port statistics plus the averaging window (the detector starts before the
-attack, so the logged rate is a window average that ramps up).
+(`verified=1` in `detection.csv`):
 
-A false-positive control run (`--fp-check`): a legitimate `ping -f` burst —
-~22 000 pkt/s of established-flow traffic on one port — **does** trigger the
-detector, because it keys on per-port packet rate rather than Packet-In rate.
-High data-plane throughput from a well-behaved host is indistinguishable from
-an attack at this level; a production version should watch the switch's
-Packet-In counter (or control-plane CPU) instead.
+| Threshold (pkt/s) | Detected | Mean time to mitigation (s) |
+|------------------:|:--------:|----------------------------:|
+| 100 | 3/3 | 11.4 |
+| 200 | 3/3 | 13.2 |
+| 300 | 3/3 |  8.3 |
+| 500 | 3/3 | 18.5 |
+| 800 | 0/3 | never |
+
+The reaction floor of ~6 s is the ONOS port-statistics refresh plus the
+detector's averaging window. Two runs also show an ONOS 2.7 quirk: recreating a
+meter right after deleting one can make the POST return no id, and the
+poll-and-retry fallback adds up to ~15 s to those runs (visible as the slow
+100/200/500 runs above; mitigations were verified installed in every run). A
+threshold above the attack rate (800) never triggers, so that attack runs
+unchecked.
+
+The false-positive control (`--fp-check`) matters: a legitimate `ping -f`
+burst — ~16 000 pkt/s of established-flow traffic on one port — **does**
+trigger the detector, because it keys on per-port packet rate rather than
+Packet-In rate. A production detector should watch the switch's Packet-In
+counter (or controller CPU) instead of raw port counters.
 
 ![Autonomous detection: reaction vs threshold](results/fig_detection.png)
 

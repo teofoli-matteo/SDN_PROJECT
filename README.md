@@ -56,6 +56,7 @@ and h3 the attacker running the Scapy flood.
 | `run_experiment.py` | Automated driver: waits for ONOS, then runs all scenarios and repetitions. |
 | `plot.py` | Builds `summary.csv` and the attack/defense figures. |
 | `plot_detection.py` | Turns `detection.csv` into the detection figure. |
+| `report/SDN_Report_Group2.docx` | The written report (figures and tables from `results/`). |
 | `requirements.txt` | Python dependencies for the driver/measurement side. |
 | `results/` | Sample run, generated CSVs and figures. |
 

@@ -9,7 +9,12 @@ R = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 
 
 def main():
-    df = pd.read_csv(os.path.join(R, "detection.csv")).sort_values("threshold")
+    path = os.path.join(R, "detection.csv")
+    if not os.path.exists(path):
+        raise SystemExit(
+            f"{path} is missing -- run eval_detection.py first, "
+            "or pass --out to detector.py.")
+    df = pd.read_csv(path).sort_values("threshold")
     for c in ("threshold", "triggered", "detect_s", "mitigate_s"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     trig = df[df["triggered"] == 1]

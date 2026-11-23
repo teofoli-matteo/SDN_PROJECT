@@ -5,6 +5,42 @@ REST_TIMEOUT_S = 5
 REST_TIMEOUT_MS = REST_TIMEOUT_S * 1000
 
 
+def container_cpu_usage_u(cnt):
+    """cgroup v2 CPU accounting of the container, in usec.
+
+    `docker stats --no-stream` is CPU averaged since container start on some
+    podman deployments, which makes it useless for sampling. The cgroup counter
+    is exact and works the same for Docker and podman. Returns None if the
+    container or its cgroup cannot be found."""
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Pid}}", cnt],
+            capture_output=True, text=True, timeout=10)
+        pid = r.stdout.strip()
+        if r.returncode != 0 or not pid.isdigit() or pid == "0":
+            return None
+        with open(f"/proc/{pid}/cgroup") as cg:
+            line = cg.read().strip().splitlines()[0]
+        rel = line.split("::", 1)[1] if "::" in line else line.split(":", 2)[-1]
+        with open(f"/sys/fs/cgroup{rel}/cpu.stat") as f:
+            for l in f:
+                if l.startswith("usage_usec"):
+                    return int(l.split()[1])
+    except Exception:
+        return None
+    return None
+
+
+def cpu_pct_from_cgroup(cnt, prev_usage, prev_t):
+    """Instantaneous CPU % of one core between two cgroup samples, or None."""
+    now = time.monotonic()
+    usage = container_cpu_usage_u(cnt)
+    if usage is None or prev_usage is None or now <= prev_t:
+        return usage, now, None
+    pct = (usage - prev_usage) / ((now - prev_t) * 1.0e6) * 100.0
+    return usage, now, pct
+
+
 def docker_sample(name):
     out = subprocess.run(
         ["docker", "stats", "--no-stream",
@@ -68,16 +104,20 @@ def main():
     start = time.monotonic()
     end = start + a.duration if a.duration else None
     print(f"[monitor] {a.name} -> {a.out} (scenario={a.scenario} rep={a.rep})")
+    prev_usage, prev_t = cpu_pct_from_cgroup(a.name, None, 0.0)
     try:
         while end is None or time.monotonic() < end:
-            s = docker_sample(a.name)
+            prev_usage, prev_t, cpu = cpu_pct_from_cgroup(a.name, prev_usage, prev_t)
+            s = docker_sample(a.name)   # memory (deltas not needed)
             rest = rest_latency_ms(url, auth)
             elapsed = round(time.monotonic() - start, 1)
-            if s:
+            if cpu is None and s:
+                cpu = s[0]              # fallback (Docker without cgroup v2)
+            if cpu is not None and s:
                 w.writerow([f"{time.time():.1f}", a.scenario, a.rep, elapsed,
-                            s[0], mem_to_mb(s[1]), s[2], rest])
+                            round(float(cpu), 2), mem_to_mb(s[1]), s[2], rest])
                 f.flush()
-                print(f"[monitor] t={elapsed:5.1f}s CPU {s[0]:>6}%  REST {rest} ms")
+                print(f"[monitor] t={elapsed:5.1f}s CPU {cpu:>6}%  REST {rest} ms")
             time.sleep(a.interval)
     except KeyboardInterrupt:
         pass

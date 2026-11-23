@@ -249,11 +249,22 @@ This fallback is coarser than an ONOS meter and is not automated by the driver.
 | `results/summary.csv` | Per-scenario means (CPU, RAM, REST latency, RTT, loss). |
 | `results/fig_*.png` | CPU curve/time series, defenses, REST latency, RTT, memory, transition, detection. |
 
-`monitor.py` samples once per loop (the `docker stats` call makes the effective
-interval 1–3 s). `legit.py` sends one ping per second. Both use
-`time.monotonic()` for `elapsed`, so an NTP step cannot create negative or
-duplicated time values. The raw flood output of each scenario is kept in
+`monitor.py` samples the container CPU from its **cgroup v2 counter**
+(`usage_usec`), exact on both Docker and podman; memory still comes from
+`docker stats`. On some podman deployments `docker stats --no-stream` reports
+CPU averaged over the container's whole lifetime, which would freeze every
+scenario near the boot average — the cgroup counter is the reason sampling
+works there (with a `docker stats` fallback if the cgroup is unavailable).
+`legit.py` sends one ping per second. Both use `time.monotonic()` for
+`elapsed`, so an NTP step cannot create negative or duplicated time values.
+The raw flood output of each scenario is kept in
 `results/flood_<scenario>_rep<N>.log`.
+
+> **ONOS burn-in:** ONOS keeps burning CPU for many minutes after its REST API
+> and applications report ready (Karaf/Jetty background init). Starting a
+> sweep on a freshly booted controller measures the boot, not the attack:
+> `run_experiment.py` waits for ONOS to become genuinely idle (cgroup CPU below
+> 10%, twice in a row) before the sweep; `--no-settle` skips that wait.
 
 > **Docker vs podman:** Docker's `docker stats` reports CPU % relative to one
 > core (100 % = 1 core), which is what the sample results use. Podman reports

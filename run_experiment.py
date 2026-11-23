@@ -74,6 +74,35 @@ def wait_for_rest_stable(ctrl, timeout=60, threshold_ms=100.0):
     print(f"[run] WARNING: REST latency still {last} ms after {timeout}s; starting anyway")
 
 
+def wait_for_onos_idle(name="onos", threshold=10.0, timeout=600):
+    """ONOS keeps burning CPU for many minutes after REST and the apps report
+    ready (Karaf/Jetty background init). Sampling the container cgroup, wait
+    until the controller is truly quiet, or the baseline measures the boot."""
+    from monitor import container_cpu_usage_u
+    prev_u, prev_t = container_cpu_usage_u(name), time.monotonic()
+    if prev_u is None:
+        print("[run] WARNING: cannot sample ONOS cgroup CPU; skipping idle wait")
+        return
+    deadline = prev_t + timeout
+    calm = 0
+    while time.monotonic() < deadline:
+        time.sleep(5)
+        u, t = container_cpu_usage_u(name), time.monotonic()
+        if u is None:
+            print("[run] WARNING: lost ONOS cgroup CPU sampling; starting anyway")
+            return
+        pct = (u - prev_u) / ((t - prev_t) * 1e6) * 100
+        prev_u, prev_t = u, t
+        if pct < threshold:
+            calm += 1
+            if calm >= 2:
+                print(f"[run] ONOS idle ({pct:.1f}% CPU) -- starting the sweep")
+                return
+        else:
+            calm = 0
+            print(f"[run] waiting for ONOS to settle ({pct:.1f}% > {threshold}%)")
+
+
 def archive_previous_results():
     """Move the previous run's CSVs aside instead of silently appending to them."""
     names = ("onos.csv", "legit.csv", "events.csv")
@@ -200,6 +229,8 @@ def main():
     ap.add_argument("--trans-delay", type=int, default=20)
     ap.add_argument("--append", action="store_true",
                     help="append to the existing CSVs instead of archiving them")
+    ap.add_argument("--no-settle", action="store_true",
+                    help="skip the wait for ONOS to become idle before the sweep")
     a = ap.parse_args()
 
     setLogLevel('warning')
@@ -209,6 +240,8 @@ def main():
         dev = wait_for_control_plane(a.controller)
         print(f"[run] ONOS sees switch {dev}; reactive forwarding is ACTIVE")
         wait_for_rest_stable(a.controller)
+        if not a.no_settle:
+            wait_for_onos_idle("onos")
         prepare_results(a.append)
 
         ev_path = f"{RESULTS}/events.csv"

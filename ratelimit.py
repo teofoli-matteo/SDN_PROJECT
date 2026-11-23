@@ -44,14 +44,40 @@ def _meter_id_decimal(mid):
         return int(s)
 
 
+def _find_matching_meter(o, dev, rate):
+    """A usable meter already carrying exactly this DROP rate, if any."""
+    for m in o.get(f"/meters/{dev}").get("meters", []):
+        mid = m.get("id")
+        if _usable_id(mid) and any(
+                str(b.get("rate")) == str(rate) and b.get("type") == "DROP"
+                for b in m.get("bands", [])):
+            return _meter_id_decimal(mid)
+    return None
+
+
+def _create_meter(o, dev, rate, tries=5):
+    """POST a new meter, retrying: ONOS 2.7 can answer 400 to the first
+    creation right after a meter was deleted on the same device."""
+    last = None
+    for _ in range(tries):
+        try:
+            resp = o.post(f"/meters/{dev}", meter_body(dev, rate))
+            raw_id = resp.get("id") if isinstance(resp, dict) else None
+            if _usable_id(raw_id):
+                return _meter_id_decimal(raw_id)
+            last = f"no id in POST response: {resp}"
+        except RuntimeError as e:
+            last = str(e)
+        time.sleep(3)
+    print(f"[ratelimit] meter creation failed after {tries} tries: {last}")
+    return None
+
+
 def find_meter_id(o, dev, rate):
     for _ in range(10):
-        for m in o.get(f"/meters/{dev}").get("meters", []):
-            mid = m.get("id")
-            if _usable_id(mid) and any(
-                    str(b.get("rate")) == str(rate) and b.get("type") == "DROP"
-                    for b in m.get("bands", [])):
-                return _meter_id_decimal(mid)
+        mid = _find_matching_meter(o, dev, rate)
+        if mid is not None:
+            return mid
         time.sleep(1)
     ids = []
     for m in o.get(f"/meters/{dev}").get("meters", []):
@@ -64,9 +90,10 @@ def find_meter_id(o, dev, rate):
 
 
 def install(o, dev, port, rate):
-    resp = o.post(f"/meters/{dev}", meter_body(dev, rate))
-    raw_id = resp.get("id") if isinstance(resp, dict) else None
-    meter_id = _meter_id_decimal(raw_id) if _usable_id(raw_id) else None
+    # reuse an identical leftover meter if there is one, else create
+    meter_id = _find_matching_meter(o, dev, rate)
+    if meter_id is None:
+        meter_id = _create_meter(o, dev, rate)
     if meter_id is None:
         meter_id = find_meter_id(o, dev, rate)
     if not meter_id:

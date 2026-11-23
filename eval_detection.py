@@ -33,7 +33,7 @@ def start_flood(h3, rate, duration, log_name):
     flood_log = open(f"{RESULTS}/{log_name}", "w")
     atk = h3.popen([PY, f"{HERE}/flood.py",
                     "--iface", h3.defaultIntf().name,
-                    "--dst-ip", "10.0.0.1", "--rate", str(ctrl_rate),
+                    "--dst-ip", "10.0.0.1", "--rate", str(rate),
                     "--duration", str(duration)],
                    stdout=flood_log, stderr=subprocess.STDOUT)
     return atk, flood_log

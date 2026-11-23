@@ -22,6 +22,12 @@ def mitigate(o, dev, port, defense, rate):
         ratelimit.install(o, dev, port, rate)
 
 
+def mitigation_present(o, dev, defense):
+    app = block.APP if defense == "block" else ratelimit.APP
+    return any(f.get("appId") == app and f.get("state") in (None, "ADDED", "PENDING_ADD")
+               for f in o.get(f"/flows/{dev}").get("flows", []))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
@@ -39,10 +45,10 @@ def main():
 
     o = Onos(host=a.host)
     dev = o.first_device()
-    hist = collections.deque()         
+    hist = collections.deque()
     start = time.time()
     triggered = False
-    detect_s = mitig_s = hit_port = hit_rate = ""
+    detect_s = mitig_s = hit_port = hit_rate = verified = ""
 
     print(f"[detector] watching {dev}, threshold {a.threshold} pkt/s, "
           f"window {a.window}s, defense={a.defense}")
@@ -54,7 +60,7 @@ def main():
             hist.popleft()
         t0, old = hist[0]
         span = now - t0
-        if span >= a.window * 0.6:        # just fotr stable rate
+        if span >= a.window * 0.6:
             for port, rx in cur.items():
                 if port not in old:
                     continue
@@ -66,8 +72,11 @@ def main():
                           f"(detected at {detect_s}s)")
                     mitigate(o, dev, port, a.defense, a.rate)
                     mitig_s = round(time.time() - start, 2)
+                    time.sleep(0.5)
+                    verified = int(mitigation_present(o, dev, a.defense))
                     triggered = True
-                    print(f"[detector] mitigated with {a.defense} at {mitig_s}s")
+                    print(f"[detector] mitigated with {a.defense} at {mitig_s}s "
+                          f"(flow verified: {bool(verified)})")
                     break
         if triggered and a.once:
             break
@@ -80,9 +89,9 @@ def main():
             w = csv.writer(f)
             if fresh:
                 w.writerow(["label", "threshold", "defense", "triggered",
-                            "detect_s", "mitigate_s", "port", "rate_pkts"])
+                            "detect_s", "mitigate_s", "verified", "port", "rate_pkts"])
             w.writerow([a.label, a.threshold, a.defense, int(triggered),
-                        detect_s, mitig_s, hit_port, hit_rate])
+                        detect_s, mitig_s, verified, hit_port, hit_rate])
     if not triggered:
         print(f"[detector] no attack detected (threshold {a.threshold} pkt/s)")
 

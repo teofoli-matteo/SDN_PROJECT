@@ -154,9 +154,16 @@ per-port rates over a sliding window, and when a port crosses the threshold it
 installs a mitigation and logs how long it took.
 
 ```bash
-sudo python3 eval_detection.py --controller 127.0.0.1 --rate 500 --defense ratelimit --thresholds 100,200,300,500,800
+sudo python3 eval_detection.py --controller 127.0.0.1 --rate 500 --defense ratelimit --thresholds 100,200,300,500,800 --reps 3
 python3 plot_detection.py
 ```
+
+Each threshold is attacked `--reps` times; the plot averages the runs per
+threshold and marks a threshold as detected when at least half the runs
+triggered. After the sweep, `--fp-check` adds a control run with no attack at
+all: a legitimate `ping -f` burst on the client host, to see whether the
+detector can be lured into mitigating a well-behaved host (it can — see
+Results).
 
 To watch the detector react live instead, run it on its own and then start an
 attack; the mitigation fires without any manual action:
@@ -288,27 +295,43 @@ duplicated time values. The raw flood output of each scenario is kept in
 
 ## Results
 
-Means over three repetitions, on a one-CPU, 2 GB ONOS container.
+Means over three repetitions (detection: three runs per threshold), on a one-CPU,
+2 GB ONOS container.
 
-| Scenario | ONOS CPU % | RAM (MB) | Legit ping (ms) | Loss % |
-|----------|-----------:|---------:|----------------:|-------:|
-| baseline      |   1.7 | 2006 | 0.10 | 0.0 |
-| attack 200    |  42.1 | 2007 | 0.08 | 0.0 |
-| attack 500    |  87.0 | 2014 | 0.08 | 0.0 |
-| attack 1000   | 102.0 | 2019 | 0.08 | 0.0 |
-| block 200     |   6.5 | 2011 | 0.09 | 0.0 |
-| block 500     |  23.3 | 2013 | 0.09 | 0.0 |
-| block 1000    |  46.9 | 2023 | 0.09 | 0.0 |
-| ratelimit 200 |   1.7 | 2010 | 0.08 | 0.0 |
-| ratelimit 500 |  16.9 | 2014 | 0.08 | 0.0 |
-| ratelimit 1000|   8.4 | 2027 | 0.08 | 0.0 |
+| Scenario | ONOS CPU % | RAM (MB) | REST latency (ms) | Legit ping (ms) | Loss % |
+|----------|-----------:|---------:|------------------:|----------------:|-------:|
+| baseline      |   1.3 | 2031 |  5.2 | 0.09 | 0.0 |
+| attack 200    |  52.3 | 2032 | 10.4 | 0.06 | 0.0 |
+| attack 500    |  73.6 | 2034 | 10.6 | 0.06 | 0.0 |
+| attack 1000   | 100.0 | 2034 | 42.5 | 0.06 | 0.0 |
+| block 200     |   6.6 | 2033 |  5.3 | 0.06 | 0.0 |
+| block 500     |   8.4 | 2034 |  5.9 | 0.06 | 0.0 |
+| block 1000    |  35.7 | 2034 |  7.9 | 0.06 | 0.0 |
+| ratelimit 200 |   1.6 | 2033 |  4.9 | 0.06 | 0.0 |
+| ratelimit 500 |   1.3 | 2034 |  4.8 | 0.06 | 0.0 |
+| ratelimit 1000|   1.2 | 2033 |  4.7 | 0.06 | 0.0 |
 
-The control-plane CPU is what saturates: it climbs from 1.7% at rest to 42.1%,
-87.0% and 102% at 200, 500 and 1000 pkt/s. RAM stays near 2 GB throughout, so it
-is not the bottleneck, and the legitimate ping stays around 0.08 ms with no
-loss, because an established flow is forwarded by the switch alone. Both
-defenses bring the controller back; rate limiting protects it best, keeping CPU
-at or below 16.9% at every rate in this run.
+The control-plane CPU is what saturates: it climbs from 1.3% at rest to 52.3%,
+73.6% and 100% (the full single-core quota) at 200, 500 and 1000 pkt/s. The REST
+latency follows: 5.2 ms at rest against 42.5 ms (~8x) under the 1000 pkt/s
+flood — even served on separate threads, control-plane responsiveness degrades
+measurably under saturation. RAM stays near 2 GB throughout, so it is not the
+bottleneck. The legitimate ping stays around 0.06 ms with no loss, because an
+established flow is forwarded by the switch alone; what a Packet-In flood breaks
+is the ability to set up *new* flows, which is exactly what it denies every
+spoofed source it injects.
+
+Both defenses protect the controller, and in steady state they bring it back to
+the baseline: the rate-limited port stays at 1.2–1.6% CPU at every attack rate
+(the meter caps what reaches the controller and the `NORMAL` output keeps even
+the allowed packets in the datapath). The block averages (6.6%, 8.4%, 35.7%)
+deserve a caveat: the scenarios run back to back, and the block run starts
+while ONOS is still flushing the reactive state installed by the **preceding
+attack run** — with only 3 s between scenarios, the bigger the preceding
+attack, the longer the flush. The per-run time series (`fig_cpu_timeseries.png`)
+shows it directly: `block1000` starts near 68% and decays to ~2% within 16–24 s,
+i.e. blocking itself drops everything, the average is inflated by the tail of
+the previous scenario, not by a weakness of the rule.
 
 ![CPU vs attack rate](results/fig_cpu_curve.png)
 
@@ -316,12 +339,22 @@ at or below 16.9% at every rate in this run.
 
 ![Defense applied mid-attack](results/fig_transition.png)
 
-For the autonomous detector against a 500 pkt/s attack: thresholds of 100, 200
-and 300 pkt/s detect and mitigate in about 6 seconds, 500 pkt/s in about 14
-seconds, and 800 pkt/s never triggers, so the attack runs unchecked. A higher
-threshold is crossed later, and one set above the attack rate misses the attack
-entirely. The reaction time has a floor of a few seconds, set by how often ONOS
-refreshes its port statistics plus the averaging window.
+For the autonomous detector against a 500 pkt/s attack, three runs per
+threshold, every reported mitigation verified as actually installed in ONOS
+(`verified=1` in `detection.csv`): thresholds of 100, 200 and 300 pkt/s detect
+and mitigate in about 6–7 seconds, 500 pkt/s in about 11.5 seconds, and
+800 pkt/s never triggers, so the attack runs unchecked. A higher threshold is
+crossed later, and one set above the attack rate misses the attack entirely.
+The reaction time has a floor of a few seconds, set by how often ONOS refreshes
+its port statistics plus the averaging window (the detector starts before the
+attack, so the logged rate is a window average that ramps up).
+
+A false-positive control run (`--fp-check`): a legitimate `ping -f` burst —
+~22 000 pkt/s of established-flow traffic on one port — **does** trigger the
+detector, because it keys on per-port packet rate rather than Packet-In rate.
+High data-plane throughput from a well-behaved host is indistinguishable from
+an attack at this level; a production version should watch the switch's
+Packet-In counter (or control-plane CPU) instead.
 
 ![Autonomous detection: reaction vs threshold](results/fig_detection.png)
 

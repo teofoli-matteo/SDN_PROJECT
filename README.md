@@ -27,68 +27,108 @@ exhaustion only.
 ## Topology
 
 ```
-          ONOS (Docker, 1 CPU / 2 GB)
-                 |  OpenFlow 1.3 (tcp/6653)
-              [ s1 ]  Open vSwitch
-             /   |   \
-          h1    h2    h3
-       server  client  attacker
-       (port1) (port2) (port3 = s1-eth3)
+         ONOS (Docker, CPU-limited)
+                |  OpenFlow 1.3 (tcp/6653)
+             [ s1 ]  Open vSwitch
+            /   |   \
+         h1    h2    h3
+      server  client  attacker
+      (port1)  (port2)  (port3 = s1-eth3)
 ```
 
-h1 is a server, h2 the legitimate client we measure (steady ping and loss), and
-h3 the attacker running the Scapy flood.
+h1 is a server, h2 the legitimate client we measure (steady ping RTT and loss),
+and h3 the attacker running the Scapy flood.
 
 ## Repository layout
 
 | File | Role |
 |------|------|
-| `start_onos.sh` | Launch a CPU-limited ONOS in Docker and activate `openflow` + `fwd` (reactive forwarding). |
+| `start_onos.sh` | Launch a **CPU-limited** ONOS in Docker, activate and **verify** `openflow` + `fwd`. |
 | `topology.py` | Mininet network (h1/h2/h3 + s1), for the live demo. |
-| `flood.py` | Scapy attack: random src MAC/IP, one Packet-In per packet. Runs in h3. |
-| `legit.py` | Victim workload in h2: steady ping RTT and loss. |
-| `monitor.py` | Samples ONOS CPU%, RAM and REST-API latency to CSV. |
-| `block.py` | Countermeasure 1: drop everything from the attacker's ingress port. |
-| `ratelimit.py` | Countermeasure 2: cap the attacker's port to N pkt/s with an ONOS meter. |
+| `flood.py` | Scapy attack: random src MAC/IP → one Packet-In per packet. Runs in h3. |
+| `legit.py` | Victim workload in h2: steady ping RTT + loss. |
+| `monitor.py` | Samples ONOS CPU%, RAM, container memory and REST-API latency to CSV. |
+| `block.py` | Countermeasure 1 — DROP everything from the attacker's ingress port. |
+| `ratelimit.py` | Countermeasure 2 — cap the attacker's port to N pkt/s with an ONOS meter. |
 | `detector.py` | Autonomous detector: watches per-port rates and triggers a mitigation by itself. |
 | `eval_detection.py` | Sweeps detection thresholds and logs the detector's reaction time. |
 | `onoslib.py` | Tiny ONOS REST helper (stdlib only). |
-| `run_experiment.py` | Automated driver: all scenarios, 3 repetitions, writes `results/*.csv`. |
-| `plot.py` | Turns the CSVs into `summary.csv` and the attack/defense figures. |
+| `run_experiment.py` | Automated driver: waits for ONOS, then runs all scenarios and repetitions. |
+| `plot.py` | Builds `summary.csv` and the attack/defense figures. |
 | `plot_detection.py` | Turns `detection.csv` into the detection figure. |
-| `results/` | Collected CSVs and generated figures. |
+| `report/SDN_Report_Group2.docx` | The written report (figures and tables from `results/`). |
+| `requirements.txt` | Python dependencies for the driver/measurement side. |
+| `results/` | Sample run, generated CSVs and figures. |
 
 ## Requirements
 
-A Linux host with Mininet, Open vSwitch, Docker, Python 3 and Scapy. The
-plotting scripts also need pandas and matplotlib.
+- Linux host with **root** access for Mininet.
+- **Mininet ≥ 2.3** and **Open vSwitch** (`mn`, `ovs-vsctl`).
+- **Docker** (or podman with the `docker` CLI).
+- **Python 3.9+** and the packages in `requirements.txt`.
 
 ```bash
-sudo apt install -y mininet openvswitch-switch python3-scapy docker.io curl
-pip install pandas matplotlib
-docker pull onosproject/onos:2.7-latest
+# Debian/Ubuntu
+sudo apt install mininet openvswitch-switch python3-pip
+# Fedora
+sudo dnf install mininet openvswitch python3-pip
+
+python3 -m pip install -r requirements.txt
 ```
 
-## Starting ONOS (needed for everything below)
+The experiment scripts start `python3` processes inside the Mininet hosts and
+in the monitor. Install the dependencies for the interpreter you use to run
+the driver. A virtualenv also works: `run_experiment.py` propagates
+`sys.executable` to every subprocess (monitor, legitimate client, flood,
+defenses).
 
-ONOS has to be fully booted, with its apps ACTIVE, before Mininet connects. If
-Mininet starts first, the switch connects to a half-booted controller and never
-registers. So start ONOS, wait, and check the app state.
+Two supported setups:
+
+- system Python with Mininet **and** the pip packages installed system-wide;
+- a venv that can see Mininet, e.g.
+  `python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements.txt`,
+  then run `sudo .venv/bin/python run_experiment.py ...` (Mininet still needs root).
+
+## Quick start
 
 ```bash
-sudo mn -c
-sudo docker rm -f onos
-sudo ./start_onos.sh
-sleep 90
-curl -s -u onos:rocks http://localhost:8181/onos/v1/applications/org.onosproject.openflow | grep -o '"state":"[A-Z]*"'
+./start_onos.sh
+
+sudo python3 run_experiment.py --rates 200,500,1000 --duration 40 --reps 3
+
+python3 plot.py
 ```
 
-If that does not print `"ACTIVE"`, activate the apps and wait:
+`start_onos.sh`:
+
+1. starts a CPU/RAM-limited ONOS container (`CPU_LIMIT=1.0`, `MEM_LIMIT=2g`),
+2. activates `openflow` and `fwd` at boot through `ONOS_APPS`,
+3. waits for **HTTP 200** on `/onos/v1/devices` (a 404/503 is not "ready"),
+4. verifies through the REST API that both applications are `ACTIVE`,
+5. exits non-zero with the container logs if ONOS is not usable.
+
+Useful variants:
 
 ```bash
-curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.openflow/active
-curl -u onos:rocks -X POST http://localhost:8181/onos/v1/applications/org.onosproject.fwd/active
-sleep 10
+CPU_LIMIT=0.5 ./start_onos.sh                  # more fragile controller
+ONOS_APPS=openflow,fwd,gui2 ./start_onos.sh    # keep the web UI
+ONOS_IMAGE=docker.io/onosproject/onos ./start_onos.sh   # podman short-name workaround
+```
+
+`run_experiment.py` refuses to start silently: it waits until ONOS sees the
+switch, `org.onosproject.fwd` is `ACTIVE`, and the REST latency has settled,
+and it stops if the flood or a defense script fails. Results from a previous
+run are moved to `results/previous-<timestamp>/`; use `--append` to append
+instead. The driver runs `sudo`, so it writes `results/` as root; run
+`sudo chown -R $USER:$USER results` before plotting if needed.
+
+### Smoke test (about 3 minutes)
+
+A short run checks the whole chain without waiting for the full sweep:
+
+```bash
+sudo python3 run_experiment.py --rates 500 --duration 15 --reps 1 --trans-rate 500 --trans-delay 8
+python3 plot.py
 ```
 
 ## Reproducing the results (the real experiment)
@@ -97,28 +137,13 @@ sleep 10
 baseline, then each attack rate with no defense, with blocking, and with rate
 limiting. Defenses are applied from the start of each run so the average is a
 clean defended state, each scenario is repeated three times, and two transition
-runs apply the defense mid-attack for the time-series figure.
-
-Clear `results/` first so old data does not mix with the new run (the scripts
-append to the CSVs), then run and plot. The full run takes about 20 minutes.
+runs apply the defense mid-attack for the time-series figure. The full run
+takes about 20 minutes.
 
 ```bash
-rm -f results/onos.csv results/legit.csv results/events.csv results/summary.csv
-sudo python3 run_experiment.py --controller 127.0.0.1 --rates 200,500,1000 --duration 40 --reps 3 --trans-rate 1000 --trans-delay 20
+sudo python3 run_experiment.py --rates 200,500,1000 --duration 40 --reps 3 \
+     --controller 127.0.0.1 --trans-rate 1000 --trans-delay 20
 sudo chown -R $USER:$USER results      # run_experiment writes as root; take the files back
-python3 plot.py
-```
-
-## A quick check (about 3 minutes)
-
-To confirm the whole pipeline works without waiting for the full run, use one
-rate, a short duration and a single repetition. This overwrites `results/`, so
-back it up first if it holds data you want to keep.
-
-```bash
-rm -f results/onos.csv results/legit.csv results/events.csv results/summary.csv
-sudo python3 run_experiment.py --controller 127.0.0.1 --rates 500 --duration 15 --reps 1 --trans-rate 500 --trans-delay 8
-sudo chown -R $USER:$USER results
 python3 plot.py
 ```
 
@@ -130,9 +155,16 @@ per-port rates over a sliding window, and when a port crosses the threshold it
 installs a mitigation and logs how long it took.
 
 ```bash
-sudo python3 eval_detection.py --controller 127.0.0.1 --rate 500 --defense ratelimit --thresholds 100,200,300,500,800
+sudo python3 eval_detection.py --controller 127.0.0.1 --rate 500 --defense ratelimit --thresholds 100,200,300,500,800 --reps 3
 python3 plot_detection.py
 ```
+
+Each threshold is attacked `--reps` times; the plot averages the runs per
+threshold and marks a threshold as detected when at least half the runs
+triggered. After the sweep, `--fp-check` adds a control run with no attack at
+all: a legitimate `ping -f` burst on the client host, to see whether the
+detector can be lured into mitigating a well-behaved host (it can — see
+Results).
 
 To watch the detector react live instead, run it on its own and then start an
 attack; the mitigation fires without any manual action:
@@ -142,6 +174,12 @@ python3 detector.py --defense ratelimit --threshold 300
 # then, inside the Mininet CLI:
 #   h3 python3 flood.py --iface h3-eth0 --dst-ip 10.0.0.1 --rate 500 --duration 120 &
 ```
+
+Caveat: the rate the detector compares to the threshold is a time average over
+its window (at least 6 s of a 10 s window), so while the attack ramps up the
+averaged rate understates the instantaneous attack rate, and the logged
+reaction time includes this window warm-up. The floor of a few seconds is set
+by how often ONOS refreshes its port statistics plus that averaging window.
 
 ## Live demo (manual)
 
@@ -168,30 +206,149 @@ sudo mn -c
 sudo docker rm -f onos
 ```
 
+## Countermeasures
+
+- **Blocking** installs a high-priority DROP flow matching the attacker's
+  ingress port, via the ONOS REST API (application id
+  `org.saturation.block`). It removes the attack entirely, including any
+  legitimate traffic that would share that port.
+- **Rate limiting** creates an ONOS meter (`PKTS_PER_SEC`) and a flow matching
+  the attacker's ingress port that applies the meter and then outputs `NORMAL`.
+  The attacker keeps sending, but the controller only sees the allowed rate.
+  Note that the `NORMAL` output also keeps the allowed packets entirely in the
+  datapath, which is part of why the metered runs sit so close to the baseline.
+
+Both scripts verify that the flow is visible in ONOS after installation and
+raise an error otherwise. `run_experiment.py` removes the flows/meters between
+scenarios.
+
+### Fallback if the switch does not honour meters
+
+`ratelimit.py` exits with an explicit message if ONOS/OVS cannot allocate a
+meter. You can cap the attacker port in OVS instead. `ingress_policing_rate`
+is in **kbit/s**, so for 1500-byte frames:
+
+```bash
+# ~1000 pkt/s -> 1000 * 1500 * 8 / 1000 = 12000 kbit/s
+sudo ovs-vsctl set interface s1-eth3 ingress_policing_rate=12000
+sudo ovs-vsctl set interface s1-eth3 ingress_policing_burst=0
+
+# remove the cap
+sudo ovs-vsctl set interface s1-eth3 ingress_policing_rate=0
+```
+
+This fallback is coarser than an ONOS meter and is not automated by the driver.
+
+## Result files
+
+| File | Content |
+|------|---------|
+| `results/onos.csv` | `ts,scenario,rep,elapsed,cpu_pct,mem_mb,mem_pct,rest_ms` |
+| `results/legit.csv` | `ts,scenario,rep,elapsed,steady_rtt_ms,loss` |
+| `results/events.csv` | Time (s) at which a defense was applied mid-attack (the nominal delay). |
+| `results/detection.csv` | Per-threshold detector runs: triggered, detect/mitigate time, port, rate. |
+| `results/summary.csv` | Per-scenario means (CPU, RAM, REST latency, RTT, loss). |
+| `results/fig_*.png` | CPU curve/time series, defenses, REST latency, RTT, memory, transition, detection. |
+
+`monitor.py` samples the container CPU from its **cgroup v2 counter**
+(`usage_usec`), exact on both Docker and podman; memory still comes from
+`docker stats`. On some podman deployments `docker stats --no-stream` reports
+CPU averaged over the container's whole lifetime, which would freeze every
+scenario near the boot average — the cgroup counter is the reason sampling
+works there (with a `docker stats` fallback if the cgroup is unavailable).
+`legit.py` sends one ping per second. Both use `time.monotonic()` for
+`elapsed`, so an NTP step cannot create negative or duplicated time values.
+The raw flood output of each scenario is kept in
+`results/flood_<scenario>_rep<N>.log`.
+
+> **ONOS burn-in:** ONOS keeps burning CPU for many minutes after its REST API
+> and applications report ready (Karaf/Jetty background init). Starting a
+> sweep on a freshly booted controller measures the boot, not the attack:
+> `run_experiment.py` waits for ONOS to become genuinely idle (cgroup CPU below
+> 10%, twice in a row) before the sweep; `--no-settle` skips that wait.
+
+> **Docker vs podman:** Docker's `docker stats` reports CPU % relative to one
+> core (100 % = 1 core), which is what the sample results use. Podman reports
+> CPU % relative to **all host cores**; multiply its value by `nproc` to compare
+> with Docker (and keep the same `CPU_LIMIT`). The REST latency, RTT and loss
+> columns are unaffected.
+
+## Measurements and interpretation
+
+- The attack generates a Packet-In per packet because the source MAC/IP is
+  random; `fwd` installs a new reactive flow each time.
+- `legit.py` pings h1 from h2. Once the flow is established, the RTT stays low
+  even when the controller is saturated (the data plane is separate); what
+  degrades is the control plane: CPU, REST latency and the ability to install
+  new flows. The victim's ping is primed once before each scenario, so the
+  steady RTT measures the **established** flow, and a saturated controller
+  mainly hurts traffic that needs *new* flows.
+- `monitor.py` reads CPU and memory with `docker stats`, so it measures the
+  container as limited by `CPU_LIMIT`/`MEM_LIMIT`.
+- The expected qualitative result: CPU grows with the attack rate until
+  saturation (~100 % of one core); blocking removes the load, rate-limiting
+  bounds it while keeping the attacker's packets flowing.
+- REST latency barely moves under load (ONOS serves it on separate threads), so
+  we rely mostly on CPU, RAM and ping.
+- Pure-Python Scapy tops out around 1 to 2k pkt/s; for higher rates use hping3.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `*** Mininet must run as root` | Run `run_experiment.py`/`topology.py` with `sudo`. |
+| `No OpenFlow device yet` | ONOS is not ready, the switch is not connected, or `fwd` is not `ACTIVE`. Re-run `./start_onos.sh` and check its output. |
+| `REST API not ready after 180s` | Slow first boot or port conflict. `docker logs onos \| tail -80`. |
+| ONOS container fails with `short-name resolution` | podman: use `ONOS_IMAGE=docker.io/onosproject/onos ./start_onos.sh`. |
+| 100 % loss in `legit.csv` | `ping` output is localised; this version forces `LC_ALL=C`. If it reappears, check the `ping` binary. |
+| `could not get a meter id` | The switch does not support OF1.3 meters; use the OVS ingress-policing fallback above. |
+| `fwd state=INSTALLED` | The app is installed but not active; `start_onos.sh` now waits and retries. |
+| Hosts fail to ping after re-running the topology | Restart ONOS (`docker rm -f onos` then `./start_onos.sh`): stale host entries from a previous topology otherwise confuse the controller. |
+
 ## Results
 
-Means over three repetitions, on a one-CPU, 2 GB ONOS container.
+Means over three repetitions (detection: three runs per threshold). Dataset
+collected 2026-11-23 with the merged pipeline, Fedora 45 host, podman 6.2
+rootful container (`--cpus=1.0 --memory=2g`), Open vSwitch 4.0.0,
+ONOS 2.7.1, Mininet 2.3.1. Controller CPU is sampled from the container's
+cgroup v2 counter.
 
-| Scenario | ONOS CPU % | RAM (MB) | Legit ping (ms) | Loss % |
-|----------|-----------:|---------:|----------------:|-------:|
-| baseline      |   1.7 | 2006 | 0.10 | 0.0 |
-| attack 200    |  42.1 | 2007 | 0.08 | 0.0 |
-| attack 500    |  87.0 | 2014 | 0.08 | 0.0 |
-| attack 1000   | 102.0 | 2019 | 0.08 | 0.0 |
-| block 200     |   6.5 | 2011 | 0.09 | 0.0 |
-| block 500     |  23.3 | 2013 | 0.09 | 0.0 |
-| block 1000    |  46.9 | 2023 | 0.09 | 0.0 |
-| ratelimit 200 |   1.7 | 2010 | 0.08 | 0.0 |
-| ratelimit 500 |  16.9 | 2014 | 0.08 | 0.0 |
-| ratelimit 1000|   8.4 | 2027 | 0.08 | 0.0 |
+| Scenario | ONOS CPU % | RAM (MB) | REST latency (ms) | Legit ping (ms) | Loss % |
+|----------|-----------:|---------:|------------------:|----------------:|-------:|
+| baseline      |   2.7 | 944 |  5.6 | 0.08 | 0.0 |
+| attack 200    |  62.2 | 948 | 14.3 | 0.08 | 0.0 |
+| attack 500    |  92.2 | 880 | 33.7 | 0.08 | 0.0 |
+| attack 1000   |  94.9 | 892 | 52.4 | 0.26 | 0.0 |
+| block 200     |  57.9 | 947 | 10.4 | 0.08 | 0.0 |
+| block 500     |  22.3 | 889 |  7.0 | 0.08 | 0.0 |
+| block 1000    |  55.1 | 895 | 11.0 | 0.07 | 0.0 |
+| ratelimit 200 |   2.6 | 890 |  5.4 | 0.08 | 0.0 |
+| ratelimit 500 |   2.6 | 886 |  5.2 | 0.08 | 0.0 |
+| ratelimit 1000|   2.1 | 898 |  4.6 | 0.06 | 0.0 |
 
-The control-plane CPU is what saturates: it climbs from 1.7% at rest to 42.1%,
-87.0% and 102% at 200, 500 and 1000 pkt/s. RAM stays near 2 GB throughout, so it
-is not the bottleneck, and the legitimate ping stays around 0.08 ms with no loss,
-because an established flow is forwarded by the switch alone. Both defenses bring
-the controller back; rate limiting protects it best, keeping CPU at or below
-16.9% at every rate while blocking leaves 6.5% to 46.9% and weakens as the rate
-rises.
+The control-plane CPU is what saturates: from 2.7% at rest to 62.2% and 92.2%
+at 200 and 500 pkt/s, and full saturation at 94.9% of its single-core quota at
+1000 pkt/s. The load is not purely per-packet: ONOS learns a new "host" per
+spoofed source MAC, so the cost compounds during a run (the 200 pkt/s curve
+climbs from ~40% to ~100% within the 40 s window). RAM stays near 900 MB in
+every scenario on this ONOS build, with no trend, so memory is not the
+bottleneck. The REST latency follows the CPU: 5.6 ms at rest against 52.4 ms
+(~9x) at saturation — measurable degradation, but the endpoint stays alive.
+The established legitimate ping stays sub-millisecond with zero loss in every
+scenario (0.26 ms worst case at full saturation); what a Packet-In flood
+breaks is the installation of *new* flows, which is exactly what it denies.
+
+**Both defenses restore the controller to its baseline in steady state.**
+Rate limiting holds 2.1–2.6% CPU at every attack rate: the meter caps what
+reaches the controller, and the `NORMAL` output keeps even the allowed packets
+in the datapath. The block window-averages are again inflated by the
+protocol's back-to-back order: each block run starts ~3 s after the previous
+attack run ended, while ONOS is still flushing the reactive state (learned
+hosts and short-lived flows) that the attack installed. On this ONOS build the
+flush tail is long enough to dominate a 40 s window — `block1000` runs open at
+~100% CPU and decay to ~2% after ~25 s (`fig_cpu_timeseries.png` shows the
+decay). The steady-state level of the DROP rule itself is baseline, matching
+the rate-limited runs.
 
 ![CPU vs attack rate](results/fig_cpu_curve.png)
 
@@ -199,38 +356,36 @@ rises.
 
 ![Defense applied mid-attack](results/fig_transition.png)
 
-For the autonomous detector against a 500 pkt/s attack: thresholds of 100, 200
-and 300 pkt/s detect and mitigate in about 6 seconds, 500 pkt/s in about 11
-seconds, and 800 pkt/s never triggers, so the attack runs unchecked. A higher
-threshold is crossed later, and one set above the attack rate misses the attack
-entirely. The reaction time has a floor of a few seconds, set by how often ONOS
-refreshes its port statistics plus the averaging window.
+For the autonomous detector against a 500 pkt/s attack, three runs per
+threshold, every reported mitigation verified as actually installed in ONOS
+(`verified=1` in `detection.csv`):
+
+| Threshold (pkt/s) | Detected | Mean time to mitigation (s) |
+|------------------:|:--------:|----------------------------:|
+| 100 | 3/3 | 11.4 |
+| 200 | 3/3 | 13.2 |
+| 300 | 3/3 |  8.3 |
+| 500 | 3/3 | 18.5 |
+| 800 | 0/3 | never |
+
+The reaction floor of ~6 s is the ONOS port-statistics refresh plus the
+detector's averaging window. Two runs also show an ONOS 2.7 quirk: recreating a
+meter right after deleting one can make the POST return no id, and the
+poll-and-retry fallback adds up to ~15 s to those runs (visible as the slow
+100/200/500 runs above; mitigations were verified installed in every run). A
+threshold above the attack rate (800) never triggers, so that attack runs
+unchecked.
+
+The false-positive control (`--fp-check`) matters: a legitimate `ping -f`
+burst — ~16 000 pkt/s of established-flow traffic on one port — **does**
+trigger the detector, because it keys on per-port packet rate rather than
+Packet-In rate. A production detector should watch the switch's Packet-In
+counter (or controller CPU) instead of raw port counters.
 
 ![Autonomous detection: reaction vs threshold](results/fig_detection.png)
 
 Other figures in `results/`: `fig_cpu_timeseries.png`, `fig_defense_effectiveness.png`,
 `fig_rest_latency.png`, `fig_ping_health.png`, `fig_memory.png`.
-
-## Notes and known issues
-
-- Start ONOS once and the topology once per session. Restarting the topology
-  against the same ONOS leaves stale host entries, and some hosts then fail to
-  ping. If that happens, restart ONOS (`docker rm -f onos` then `start_onos.sh`).
-- Some Open vSwitch builds do not honor OpenFlow 1.3 meters. If `ratelimit.py`
-  cannot get a meter id, cap the port in the datapath instead:
-  ```bash
-  sudo ovs-vsctl set interface s1-eth3 ingress_policing_rate=1000
-  sudo ovs-vsctl set interface s1-eth3 ingress_policing_burst=100
-  # remove: ingress_policing_rate=0
-  ```
-- Clear `results/` whenever you change the code, so old CSV rows (a different
-  column layout) do not mix with new ones and break `plot.py`.
-- `run_experiment.py` and `eval_detection.py` run under `sudo`, so they write
-  `results/` as root. Run `sudo chown -R $USER:$USER results` before plotting
-  from a virtualenv.
-- REST latency barely moves under load (ONOS serves it on separate threads), so
-  we rely on CPU, RAM and ping, not REST latency.
-- Pure-Python Scapy tops out around 1 to 2k pkt/s; for higher rates use hping3.
 
 ## Authors
 

@@ -34,31 +34,79 @@ def _usable_id(mid):
     return mid is not None and str(mid) not in ("0", "None", "")
 
 
+def _meter_id_decimal(mid):
+    """ONOS serialises MeterId with toString() (hex); the REST flow/delete
+    endpoints parse the id as a decimal long."""
+    s = str(mid)
+    try:
+        return int(s, 16)
+    except ValueError:
+        return int(s)
+
+
+def _find_matching_meter(o, dev, rate):
+    """A usable meter already carrying exactly this DROP rate, if any."""
+    for m in o.get(f"/meters/{dev}").get("meters", []):
+        mid = m.get("id")
+        if _usable_id(mid) and any(
+                str(b.get("rate")) == str(rate) and b.get("type") == "DROP"
+                for b in m.get("bands", [])):
+            return _meter_id_decimal(mid)
+    return None
+
+
+def _create_meter(o, dev, rate, tries=5):
+    """POST a new meter, retrying: ONOS 2.7 can answer 400 to the first
+    creation right after a meter was deleted on the same device."""
+    last = None
+    for _ in range(tries):
+        try:
+            resp = o.post(f"/meters/{dev}", meter_body(dev, rate))
+            raw_id = resp.get("id") if isinstance(resp, dict) else None
+            if _usable_id(raw_id):
+                return _meter_id_decimal(raw_id)
+            last = f"no id in POST response: {resp}"
+        except RuntimeError as e:
+            last = str(e)
+        time.sleep(3)
+    print(f"[ratelimit] meter creation failed after {tries} tries: {last}")
+    return None
+
+
 def find_meter_id(o, dev, rate):
     for _ in range(10):
-        for m in o.get(f"/meters/{dev}").get("meters", []):
-            mid = m.get("id")
-            if _usable_id(mid) and any(
-                    str(b.get("rate")) == str(rate) and b.get("type") == "DROP"
-                    for b in m.get("bands", [])):
-                return str(mid)
+        mid = _find_matching_meter(o, dev, rate)
+        if mid is not None:
+            return mid
         time.sleep(1)
-    ids = [str(m.get("id")) for m in o.get(f"/meters/{dev}").get("meters", [])
-           if _usable_id(m.get("id"))]
+    ids = []
+    for m in o.get(f"/meters/{dev}").get("meters", []):
+        try:
+            if _usable_id(m.get("id")):
+                ids.append(_meter_id_decimal(m["id"]))
+        except (TypeError, ValueError):
+            pass
     return ids[-1] if ids else None
 
 
 def install(o, dev, port, rate):
-    resp = o.post(f"/meters/{dev}", meter_body(dev, rate))
-    meter_id = str(resp.get("id")) if _usable_id(resp.get("id")) else None
-    if not meter_id:
+    # reuse an identical leftover meter if there is one, else create
+    meter_id = _find_matching_meter(o, dev, rate)
+    if meter_id is None:
+        meter_id = _create_meter(o, dev, rate)
+    if meter_id is None:
         meter_id = find_meter_id(o, dev, rate)
     if not meter_id:
         raise SystemExit("[ratelimit] could not get a meter id -- OVS may not honor "
                          "OF1.3 meters. Use the OVS ingress-policing fallback (README).")
     print(f"[ratelimit] meter {meter_id} @ {rate} pkt/s on {dev}")
     o.post(f"/flows/{dev}?appId={APP}", flow_body(dev, port, meter_id))
-    print(f"[ratelimit] port {port} capped to {rate} pkt/s")
+    for _ in range(6):
+        if any(f.get("appId") == APP for f in o.get(f"/flows/{dev}").get("flows", [])):
+            print(f"[ratelimit] port {port} capped to {rate} pkt/s")
+            return
+        time.sleep(0.5)
+    raise SystemExit("[ratelimit] ONOS accepted the request but no flow is present")
 
 
 def install_forward_only(o, dev, port):
@@ -68,23 +116,29 @@ def install_forward_only(o, dev, port):
 
 def remove(o, dev):
     # delete only OUR flows (by appId), and only the meters THOSE flows reference
+    # (ids are normalised with _meter_id_decimal: ONOS mixes hex and decimal)
     meter_ids = set()
     n = 0
     for f in o.get(f"/flows/{dev}").get("flows", []):
         if f.get("appId") == APP:
             for ins in f.get("treatment", {}).get("instructions", []):
                 if ins.get("type") == "METER" and ins.get("meterId"):
-                    meter_ids.add(str(ins["meterId"]))
+                    try:
+                        meter_ids.add(_meter_id_decimal(ins["meterId"]))
+                    except (TypeError, ValueError):
+                        pass
             o.delete(f"/flows/{dev}/{f['id']}")
             n += 1
     m = 0
     for meter in o.get(f"/meters/{dev}").get("meters", []):
-        if str(meter.get("id")) in meter_ids:
+        if not _usable_id(meter.get("id")):
+            continue
+        if _meter_id_decimal(meter["id"]) in meter_ids:
             try:
-                o.delete(f"/meters/{dev}/{meter['id']}")
+                o.delete(f"/meters/{dev}/{_meter_id_decimal(meter['id'])}")
                 m += 1
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ratelimit] could not delete meter {meter.get('id')}: {e}")
     print(f"[ratelimit] removed {n} flow(s) and {m} meter(s) (ours only)")
 
 

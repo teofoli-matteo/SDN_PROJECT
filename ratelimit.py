@@ -55,38 +55,31 @@ def _find_matching_meter(o, dev, rate):
     return None
 
 
-def _create_meter(o, dev, rate, tries=5):
-    """POST a new meter, retrying: ONOS 2.7 can answer 400 to the first
-    creation right after a meter was deleted on the same device."""
-    last = None
-    for _ in range(tries):
-        try:
-            resp = o.post(f"/meters/{dev}", meter_body(dev, rate))
-            raw_id = resp.get("id") if isinstance(resp, dict) else None
-            if _usable_id(raw_id):
-                return _meter_id_decimal(raw_id)
-            last = f"no id in POST response: {resp}"
-        except RuntimeError as e:
-            last = str(e)
-        time.sleep(3)
-    print(f"[ratelimit] meter creation failed after {tries} tries: {last}")
-    return None
-
-
-def find_meter_id(o, dev, rate):
-    for _ in range(10):
+def _create_meter(o, dev, rate, settle=12):
+    """POST the meter ONCE, then read the id back from the meter list.
+    ONOS 2.7 answers 201 with an EMPTY body, so the id is never in the POST
+    response. Re-POSTing (the old behaviour) just created duplicate meters and
+    wasted ~15s per call, which also caused the 21s detection outliers."""
+    try:
+        o.post(f"/meters/{dev}", meter_body(dev, rate))
+    except RuntimeError as e:
+        print(f"[ratelimit] meter POST returned an error ({e}); reading meters back anyway")
+    for _ in range(settle):
         mid = _find_matching_meter(o, dev, rate)
         if mid is not None:
             return mid
         time.sleep(1)
-    ids = []
-    for m in o.get(f"/meters/{dev}").get("meters", []):
-        try:
-            if _usable_id(m.get("id")):
-                ids.append(_meter_id_decimal(m["id"]))
-        except (TypeError, ValueError):
-            pass
-    return ids[-1] if ids else None
+    return None
+
+
+def _wait_added(o, dev, app, tries=60, delay=0.5):
+    """Wait until OUR flow is actually ADDED on the switch (not PENDING_ADD)."""
+    for _ in range(tries):
+        for f in o.get(f"/flows/{dev}").get("flows", []):
+            if f.get("appId") == app and f.get("state") == "ADDED":
+                return True
+        time.sleep(delay)
+    return False
 
 
 def install(o, dev, port, rate):
@@ -94,19 +87,15 @@ def install(o, dev, port, rate):
     meter_id = _find_matching_meter(o, dev, rate)
     if meter_id is None:
         meter_id = _create_meter(o, dev, rate)
-    if meter_id is None:
-        meter_id = find_meter_id(o, dev, rate)
     if not meter_id:
         raise SystemExit("[ratelimit] could not get a meter id -- OVS may not honor "
                          "OF1.3 meters. Use the OVS ingress-policing fallback (README).")
     print(f"[ratelimit] meter {meter_id} @ {rate} pkt/s on {dev}")
     o.post(f"/flows/{dev}?appId={APP}", flow_body(dev, port, meter_id))
-    for _ in range(6):
-        if any(f.get("appId") == APP for f in o.get(f"/flows/{dev}").get("flows", [])):
-            print(f"[ratelimit] port {port} capped to {rate} pkt/s")
-            return
-        time.sleep(0.5)
-    raise SystemExit("[ratelimit] ONOS accepted the request but no flow is present")
+    if _wait_added(o, dev, APP):
+        print(f"[ratelimit] port {port} capped to {rate} pkt/s")
+        return
+    raise SystemExit("[ratelimit] flow never reached ADDED state on the switch")
 
 
 def install_forward_only(o, dev, port):

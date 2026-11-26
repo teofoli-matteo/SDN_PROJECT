@@ -9,20 +9,29 @@ PRIORITY = 60000
 def flow_body(device_id, port):
     return {
         "priority": PRIORITY, "isPermanent": True, "deviceId": device_id,
-        "treatment": {"instructions": []},                
+        "treatment": {"instructions": []},
         "selector": {"criteria": [{"type": "IN_PORT", "port": int(port)}]},
     }
 
 
+def _wait_added(o, dev, app, tries=60, delay=0.5):
+    """Wait until OUR flow is actually ADDED on the switch (not PENDING_ADD).
+    ONOS reports a flow in its store before OVS has programmed it; returning on
+    PENDING_ADD is why the flood sometimes kept saturating the controller."""
+    for _ in range(tries):
+        for f in o.get(f"/flows/{dev}").get("flows", []):
+            if f.get("appId") == app and f.get("state") == "ADDED":
+                return True
+        time.sleep(delay)
+    return False
+
+
 def install(o, dev, port):
     o.post(f"/flows/{dev}?appId={APP}", flow_body(dev, port))
-    # ONOS returns 201 even when the device is unknown; make sure the rule exists.
-    for _ in range(6):
-        if any(f.get("appId") == APP for f in o.get(f"/flows/{dev}").get("flows", [])):
-            print(f"[block] DROP rule installed on {dev} in_port={port}")
-            return
-        time.sleep(0.5)
-    raise SystemExit("[block] ONOS accepted the request but no rule is present")
+    if _wait_added(o, dev, APP):
+        print(f"[block] DROP rule ADDED on {dev} in_port={port}")
+        return
+    raise SystemExit("[block] rule never reached ADDED state on the switch")
 
 
 def remove(o, dev):

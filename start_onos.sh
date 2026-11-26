@@ -9,7 +9,7 @@ ONOS_IMAGE="${ONOS_IMAGE:-docker.io/onosproject/onos}"
 ONOS_APPS="${ONOS_APPS:-openflow,fwd}"
 CPU_LIMIT="${CPU_LIMIT:-1.0}"     # cores for ONOS  (try 0.5 if you want it fragile)
 MEM_LIMIT="${MEM_LIMIT:-2g}"
-NAME="${NAME:-onos}"
+NAME="onos"
 REST="http://localhost:8181/onos/v1"
 
 echo "[start_onos] (re)starting container '$NAME' cpus=$CPU_LIMIT mem=$MEM_LIMIT"
